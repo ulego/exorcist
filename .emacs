@@ -13,7 +13,7 @@
 (defvar required-packages '(slime
 			    smartparens
 			    auto-complete
-exec-path-from-shell imenus neotree company-jedi company flymake-python-pyflakes auto-complete smartparens slime pydoc helm-make anaconda-mode jedi elpy company-go yasnippet slime-repl-ansi-color php-mode multicolumn multi-compile helm govet go-scratch go-projectile go-playground multi-compile go-errcheck golint company-go go-mode  go-direx go-autocomplete flymake-go-staticcheck flymake-go flycheck flx-ido))
+exec-path-from-shell imenus neotree expand-region magit helm multiple-cursors  auto-virtualenv jedi-core pip-requirements py-autopep8 py-isort realgud powerline projectile yasnippet company-jedi company flymake-python-pyflakes auto-complete smartparens slime pydoc helm-make anaconda-mode jedi elpy company-go yasnippet slime-repl-ansi-color php-mode multicolumn multi-compile govet go-scratch go-projectile go-playground multi-compile go-errcheck golint company-go go-mode  go-direx go-autocomplete flymake-go-staticcheck flymake-go flycheck flx-ido))
 
 (defun packages-installed-p ()
   (loop for package in required-packages
@@ -113,7 +113,7 @@ exec-path-from-shell imenus neotree company-jedi company flymake-python-pyflakes
   (interactive)
   (setq tab-width     4
 	python-indent 4
-	python-shell-interpreter "ipython"
+	python-shell-interpreter "python3"
 	python-shell-interpreter-args "-i")
   (if (string-match-p "rita" (or (buffer-file-name) ""))
       (setq indent-tabs-mode t)
