@@ -204,23 +204,45 @@ example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firef
 (defparameter bytes-read-this-chunk 0)
 (defparameter reads-body "")
 (defparameter time-request 0)
+(defparameter *cookie-jar* nil)
+(defparameter download-size 0)
+(defparameter time-request 0)
+
+(defun decompress-body (content-encoding body)
+  (unless content-encoding
+    (return-from decompress-body body))
+
+  (cond
+    ((string= content-encoding "gzip")
+     (if (streamp body)
+	 (chipz:make-decompressing-stream :gzip body)
+	 (chipz:decompress nil (chipz:make-dstate :gzip) body)))
+    ((string= content-encoding "deflate")
+     (if (streamp body)
+	 (chipz:make-decompressing-stream :zlib body)
+	 (chipz:decompress nil (chipz:make-dstate :zlib) body)))
+        (t body)))
 
 
-(defun test1 (uri &optional headers_callback body_callback)
+(defun test1 (uri &optional body_callback headers_callback cookie_callback)
 (let ((*start_connect_time* (get-internal-real-time))
       (total-bytes-read 0)
-      (reads-body ""))
+      (download-size 0)
+      (time-request 0)
+      (reads-body "")
+      (*cookie-jar* (cl-cookie:make-cookie-jar)))
   (multiple-value-bind (body status response-headers uri)
      (handler-case 
 	 (handler-bind
 	     ((dex:http-request-forbidden #'dex:ignore-and-continue)
 	      (dex:http-request-not-found #'dex:ignore-and-continue)
 	      (dex:http-request-bad-request #'dex:ignore-and-continue))
-	    (dex:get uri :headers *headers* :use-connection-pool nil :connect-timeout *connect_timeout* :read-timeout *read_timeout* :want-stream t)
+	   (dex:get uri :cookie-jar *cookie-jar*  :headers *headers* :use-connection-pool nil :connect-timeout *connect_timeout* :read-timeout *read_timeout* :want-stream t)
 	)
        (dex:http-request-failed (e)
 	 (format *error-output* "+Error+: The server returned ~D" (dex:response-status e)))
        (t(c)(format *console* "+Error+: ~a" c)))
+    (if cookie_callback (funcall cookie_callback *cookie-jar*))
  (if body
    (progn 	
      (if response-headers
@@ -233,9 +255,9 @@ example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firef
     )
     )
 (finish-output nil)
-    (let((array_ (make-array *chunk-size* :element-type (stream-element-type body))))
-      (if (eq  (stream-element-type body) 'CHARACTER) ; check binary page or not
-      (setf reads-body	  
+(if (search "CHAR"  (string (ignore-errors(stream-element-type body)))) ; check binary page or not
+(let((array_ (make-string *chunk-size*)));(make-array *chunk-size* :element-type (stream-element-type body))
+    (setf reads-body	  
       (loop for size-reads-chunk  = (read-sequence array_ body)
             while (plusp size-reads-chunk)
             summing  size-reads-chunk into size-reads-chunks
@@ -244,27 +266,32 @@ example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firef
 	      do (progn(format *console* "+Error+: big length: ~a, limit: ~a" *content_length* *response_size*) (close body))
 	    when (> (coerce (/(- (get-internal-real-time)  *start_connect_time*)internal-time-units-per-second)'single-float)  *request_timeout*)
 	      do (progn(format *console* "+Error+: long delay: ~3,1f sec, limit: ~a sec" (/(- (get-internal-real-time)  *start_connect_time*)internal-time-units-per-second) *request_timeout*) (close body))
-	    finally (return (values (subseq  reads-body  0 size-reads-chunks) (setf time-request (coerce (/(- (get-internal-real-time)  *start_connect_time*)internal-time-units-per-second)'single-float))))
-	    ))
-      (progn(read-sequence array_ body) (format *console* "+Error+: seems page is binary: ~a"  (loop for i from 0 to 31 for x across array_ collect (write-to-string x :base 16)))(close body)));error about binary file and get 32 bits this file 
+	    finally (return (values (subseq  reads-body  0 size-reads-chunks) (setf time-request  (/(- (get-internal-real-time)  *start_connect_time*)internal-time-units-per-second) download-size (human-file-size size-reads-chunks))))
+	    )))
+(progn(let(;(body (if(gethash "content-encoding" response-headers) (decompress-body (gethash "content-encoding" response-headers) body) body))
+	   (array_ (make-array 36 :element-type '(unsigned-byte 8))))(read-sequence array_ body)(format *console* "+Error+: seems page is binary: ~a"  (loop for i from 0 to 31 for x across array_ collect (write-to-string x :base 16))))(close body));error about binary file and get 32 bits this file 
       )
     (if body_callback (funcall  body_callback reads-body))
     )
-   )))
- t)
-
+   ))
+  (format t "~a on ~4,3f sec"  download-size time-request))
+)
 
 (test1 *uri*); return T or Error
-(test1 *uri* nil #'print); show body
-(test1 *uri* #'(lambda(x)(maphash #'(lambda (k v)(format t "~a = ~a~%" k v))x))); print all headers
-(test1 *uri* #'(lambda(x)(format t "~a" (gethash "server" x)))); search value in server headers
+(test1 *uri* #'print); show body
+(test1 *uri* nil #'(lambda(x)(maphash #'(lambda (k v)(format t "~a = ~a~%" k v))x))); print all headers
+(test1 *uri* nil #'(lambda(x)(format t "~a" (gethash "server" x)))); search value in server headers
 (test1 *uri*
-       #'(lambda(x)(format t "~a~%" (gethash "server" x))) ; headers callback search value in server headers
        #'(lambda(x)(format t "~a~%" (lquery:$(lquery:$ (initialize x))"div ul li a" (attr :href)))) ; body callback show all hrefs in DOM
+       #'(lambda(x)(format t "~a~%" (gethash "server" x))) ; headers callback search value in server headers
+       
 )
 (test1 *uri*
-       #'(lambda(x)(format t "~a~%" (gethash "server" x))) ; headers callback search value in server headers
        #'(lambda(x)(format t "~a~%" (cl-ppcre:all-matches-as-strings "acunetix.com" x))) ; body search acunetix.com in body
+       #'(lambda(x)(format t "~a~%" (gethash "server" x))) ; headers callback search value in server headers
 )
 
 
+(setf *uri1* "https://cdn.sstatic.net/Sites/security/Img/logo.svg?v=f9d04c44487b")
+(test1 *uri* nil nil #'(lambda(x)(print (cl-cookie:cookie-jar-cookies x))))
+(test1 "https://ati.su" nil  #'(lambda(x)(format t "headers:~%")(maphash #'(lambda (k v)(format t "~a = ~a~%" k v))x)) #'(lambda(x)(format t "~%cookies:~%~a~%~%" (cl-cookie:cookie-jar-cookies x))))
