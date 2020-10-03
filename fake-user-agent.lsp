@@ -1,11 +1,13 @@
 ;;sbcl --noinform --load fake-user-agent.lsp --eval'(quit)'
- ;(ql:quickload '(dexador lquery alexandria bt-semaphore bordeaux-threads))
+ ;(ql:quickload '(dexador lquery alexandria bt-semaphore bordeaux-threads log4cl))
 
 (require 'dexador)
 (require 'lquery)
 (require 'alexandria)
 (require 'bt-semaphore)
 (require 'bordeaux-threads)
+(require 'log4cl)
+
 
 ;;;fake-user-agent
 (defvar *BROWSERS_COUNT_LIMIT* 50)
@@ -18,11 +20,12 @@
 (defparameter *list-of-browsers* '())
 (defparameter *browsers_dict* '())
 (defparameter *randomize_dict* '())
+(defparameter *default_user_agent* "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36")
 (defparameter *console* *query-io* "multithreading output console")
 
-;dexador:*default-read-timeout*
-;dexador:*default-connect-timeout*
-;dexador.util:*default-user-agent*
+(log:config :daily (merge-pathnames *default-pathname-defaults* "log.txt") :thread :nopretty :backup nil :info :sane)
+(format *console* "~3,8@T***start logging to ~A***" (merge-pathnames *default-pathname-defaults* "log.txt"))
+(log:info "~{~A:~}~3,8@T***START LOG***"(subseq (multiple-value-list(get-decoded-time)) 3 6))
 
 (defun split (list count)
   (values (subseq list 0 count) (nthcdr count list)))
@@ -31,8 +34,8 @@
 "take last statistic from \"https://www.w3schools.com/browsers/default.asp\" and return it in list:
 example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firefox\" . \"7.3%\")
  (\"Safari\" . \"3.4%\") (\"Opera\" . \"2.0%\"))"
-  (let((*request_w3* (handler-case(dex:get *BROWSERS_STATS_PAGE*)(t(c)(format nil "+ERROR+: ~a" c)))))
-    (if (not(search "+ERROR+" *request_w3*))
+  (let((*request_w3* (handler-case(dex:get *BROWSERS_STATS_PAGE*)(t(c)(log:error "+ERROR+: ~a" c)))))
+    (if *request_w3*
 	(let ((*doc* (lquery:$ (initialize *request_w3* ))))
 	  (mapcar(lambda(x y)(cons x y))
 		 (car(mapcar(lambda(x)(mapcar(lambda(y)(if(string= y (car x))(cdr x)y))
@@ -48,8 +51,8 @@ example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firef
     "take user-agents from \"http://useragentstring.com/pages/useragentstring.php?name=\"
      and return list with this, but limit 50 (*BROWSERS_COUNT_LIMIT*)"
     
-    (let ((*request_w3* (handler-case(dex:get  (concatenate 'string *BROWSER_BASE_PAGE* (substitute #\+ #\Space browser)))(t(c)(format nil "+ERROR+: ~a" c)))))
-      (if (not(search "+ERROR+" *request_w3*)) 
+    (let ((*request_w3* (handler-case(dex:get  (concatenate 'string *BROWSER_BASE_PAGE* (substitute #\+ #\Space browser)))(t(c)(log:error "+ERROR+: ~a" c)))))
+      (if  *request_w3* 
     (let ((*doc* (lquery:$ (initialize *request_w3* ))))
     (split (coerce (lquery:$ *doc* "div ul li" (text)) 'list) *BROWSERS_COUNT_LIMIT*))
       *request_w3*))
@@ -57,6 +60,8 @@ example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firef
 
 (defun update-database-user-agents()
   (let ((*list-of-browsers* (get_browsers)))
+    (if (get_browser_versions (car(car *list-of-browsers*)))
+     (progn	
     (setf *browsers_dict* (mapcar(lambda(x)(let((browser(string-downcase(remove #\_(remove #\Space(car x))))))
 		       (cons browser(get_browser_versions (car x)))))
 				 *list-of-browsers*))
@@ -71,17 +76,23 @@ example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firef
 		     collect (cons count_ browser)
 		     )))
        *list-of-browsers*))))
-(if *browsers_dict* t nil) )   
+    (if *browsers_dict* t nil))
+     nil))
 )
 
 (defun fake-user-agent()
+  (if (and *browsers_dict* *randomize_dict*)
 (let((browser_list
  (let
     ((browser (let((rand (random(/(length *randomize_dict*)2))))
 		(elt *randomize_dict*(+(position rand *randomize_dict*)1)))))
    (car(remove 'NIL (mapcar(lambda(x)(if(string= (car x) browser)(cdr x)))*browsers_dict*))))))
+  (log:info "take random user-agent")
   (nth(random(length browser_list))browser_list))
-)
+(progn
+  (log:info "take default user-agent")
+*default_user_agent*)
+))
 
 ;(bt:make-thread
 ;(lambda()
@@ -113,15 +124,14 @@ example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firef
 (defparameter *max_redirect* 15 "max redirect (default 15 times)")
 (defparameter *headers* t)
 (defparameter *user-agent* "random")
-(defparameter *default_user_agent* "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.77 Safari/537.36")
-(defparameter *random_user_agent* (if *browsers_dict* (fake-user-agent) nil)) 
+(defparameter *random_user_agent* (fake-user-agent)) 
 (defparameter *headers*
   ;(if *uri*
   ;    (append(list(cons "Host" (quri:uri-host *render-uri*)))
   (if *headers*
     (append
      (list
-     (cons "User-Agent" (cond ((string= *user-agent* "default")*default_user_agent*)((string= *user-agent* "random") (if *browsers_dict* (fake-user-agent) nil))(t *random_user_agent*)))); if user-agend default/random, if no user-agent, than random
+     (cons "User-Agent" (cond ((string= *user-agent* "default")*default_user_agent*)((string= *user-agent* "random") (fake-user-agent))(t *random_user_agent*)))); if user-agend default/random, if no user-agent, than random
      *additional-headers*)""));))
 (defparameter *start_connect_time* 0)
 (defparameter *received_body* 0 "received body content from server")
@@ -207,6 +217,7 @@ example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firef
 (defparameter *cookie-jar* nil)
 (defparameter download-size 0)
 (defparameter time-request 0)
+(defparameter response-uri nil)
 
 (defun decompress-body (content-encoding body)
   (unless content-encoding
@@ -231,50 +242,50 @@ example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firef
       (time-request 0)
       (reads-body "")
       (*cookie-jar* (cl-cookie:make-cookie-jar)))
-  (multiple-value-bind (body status response-headers uri)
+  (multiple-value-bind (body status response-headers response-uri)
      (handler-case 
 	 (handler-bind
 	     ((dex:http-request-forbidden #'dex:ignore-and-continue)
 	      (dex:http-request-not-found #'dex:ignore-and-continue)
 	      (dex:http-request-bad-request #'dex:ignore-and-continue))
-	   (dex:get uri :cookie-jar *cookie-jar*  :headers *headers* :use-connection-pool nil :connect-timeout *connect_timeout* :read-timeout *read_timeout* :want-stream t)
+	   (dex:get uri :cookie-jar *cookie-jar*  :headers *headers* :use-connection-pool nil :connect-timeout *connect_timeout* :read-timeout *read_timeout* :want-stream t :insecure t)
 	)
        (dex:http-request-failed (e)
-	 (format *error-output* "+Error+: The server returned ~D" (dex:response-status e)))
-       (t(c)(format *console* "+Error+: ~a" c)))
+	 (log:error "+Error+: The server ~a returned ~D" uri (dex:response-status e)))
+       (t(c)(log:error  "+Error+: ~a  ~a" uri c)))
     (if cookie_callback (funcall cookie_callback *cookie-jar*))
- (if body
-   (progn 	
+ 
      (if response-headers
 	(progn 
     (let((content-length (gethash "content-length"  response-headers)))
       (if content-length (setf *content_length* (parse-integer content-length)))
       (if ( < *response_size* *content_length*)
-	  (progn(format *console* "+Error+: big length: ~a, limit: ~a" *content_length* *response_size*)(close body))))
+	  (progn(log:error "+Error+: ~a big length: ~a, limit: ~a"  uri *content_length* *response_size*)(close body))))
     (if headers_callback (funcall  headers_callback response-headers))
     )
-    )
+	)
 (finish-output nil)
-(if (search "CHAR"  (string (ignore-errors(stream-element-type body)))) ; check binary page or not
-(let((array_ (make-string *chunk-size*)));(make-array *chunk-size* :element-type (stream-element-type body))
+(if body
+ (if (search "CHAR"  (string (ignore-errors(stream-element-type body)))) ; check binary page or not
+  (let((array_ (make-string *chunk-size*)));(make-array *chunk-size* :element-type (stream-element-type body))
     (setf reads-body	  
       (loop for size-reads-chunk  = (read-sequence array_ body)
             while (plusp size-reads-chunk)
             summing  size-reads-chunk into size-reads-chunks
             do (setf reads-body (concatenate 'string  reads-body array_))
             when (> size-reads-chunks *response_size*)
-	      do (progn(format *console* "+Error+: big length: ~a, limit: ~a" *content_length* *response_size*) (close body))
+	      do (progn(log:warn "+Error+: ~a big length: ~a, limit: ~a" uri *content_length* *response_size*) (close body))
 	    when (> (coerce (/(- (get-internal-real-time)  *start_connect_time*)internal-time-units-per-second)'single-float)  *request_timeout*)
-	      do (progn(format *console* "+Error+: long delay: ~3,1f sec, limit: ~a sec" (/(- (get-internal-real-time)  *start_connect_time*)internal-time-units-per-second) *request_timeout*) (close body))
+	      do (progn(log:warn "+Error+: ~a long delay: ~3,1f sec, limit: ~a sec" uri (/(- (get-internal-real-time)  *start_connect_time*)internal-time-units-per-second) *request_timeout*) (close body))
 	    finally (return (values (subseq  reads-body  0 size-reads-chunks) (setf time-request  (/(- (get-internal-real-time)  *start_connect_time*)internal-time-units-per-second) download-size (human-file-size size-reads-chunks))))
 	    )))
 (progn(let(;(body (if(gethash "content-encoding" response-headers) (decompress-body (gethash "content-encoding" response-headers) body) body))
-	   (array_ (make-array 36 :element-type '(unsigned-byte 8))))(read-sequence array_ body)(format *console* "+Error+: seems page is binary: ~a"  (loop for i from 0 to 31 for x across array_ collect (write-to-string x :base 16))))(close body));error about binary file and get 32 bits this file 
+	   (array_ (make-array 36 :element-type '(unsigned-byte 8))))(read-sequence array_ body)(log:error "+Error+: ~a seems page is binary: ~a"  uri (loop for i from 0 to 31 for x across array_ collect (write-to-string x :base 16))))(close body));error about binary file and get 32 bits this file 
       )
     (if body_callback (funcall  body_callback reads-body))
     )
-   ))
-  (format t "~a on ~4,3f sec"  download-size time-request))
+   )
+  (log:info "done ~a ~a on ~4,3f sec"  uri download-size time-request))
 )
 
 (test1 *uri*); return T or Error
@@ -290,8 +301,9 @@ example -  ((\"Chrome\" . \"81.2%\") (\"Internet Explorer\" . \"4.6%\") (\"Firef
        #'(lambda(x)(format t "~a~%" (cl-ppcre:all-matches-as-strings "acunetix.com" x))) ; body search acunetix.com in body
        #'(lambda(x)(format t "~a~%" (gethash "server" x))) ; headers callback search value in server headers
 )
-
-
-(setf *uri1* "https://cdn.sstatic.net/Sites/security/Img/logo.svg?v=f9d04c44487b")
 (test1 *uri* nil nil #'(lambda(x)(print (cl-cookie:cookie-jar-cookies x))))
+(defparameter *uri1* nil)
+(setf *uri1* "https://cdn.sstatic.net/Sites/security/Img/logo.svg?v=f9d04c44487b")
+(test1 *uri1*)
 (test1 "https://ati.su" nil  #'(lambda(x)(format t "headers:~%")(maphash #'(lambda (k v)(format t "~a = ~a~%" k v))x)) #'(lambda(x)(format t "~%cookies:~%~a~%~%" (cl-cookie:cookie-jar-cookies x))))
+(test1 "https://google.comx")
