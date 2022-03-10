@@ -1,0 +1,2 @@
+# exorcist
+some emacs scripts
